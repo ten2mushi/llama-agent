@@ -1,10 +1,10 @@
 #include "../tool-registry.h"
 #include "../permission.h"
+#include "../common/agent-common.h"
 
 #include <fstream>
-#include <filesystem>
 
-namespace fs = std::filesystem;
+namespace fs = agent::fs;
 
 static tool_result write_execute(const json & args, const tool_context & ctx) {
     std::string file_path = args.value("file_path", "");
@@ -60,6 +60,7 @@ static tool_result write_execute(const json & args, const tool_context & ctx) {
 static tool_def write_tool = {
     "write",
     "Create a new file or overwrite an existing file with the given content.",
+    "write(file_path: string, content: string)",
     R"json({
         "type": "object",
         "properties": {

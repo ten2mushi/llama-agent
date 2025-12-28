@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../common/agent-common.h"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -46,6 +48,4 @@ private:
     // Returns nullopt if file cannot be read or is binary
     static std::optional<std::string> read_file(const std::string & path);
 
-    // Escape XML special characters in attributes
-    static std::string escape_xml_attr(const std::string & str);
 };

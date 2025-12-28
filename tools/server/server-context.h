@@ -41,6 +41,10 @@ struct server_context {
     // get server info
     // used by CLI application
     server_context_info get_info() const;
+
+    // clear the current slot's KV cache and token tracking
+    // used by subagent manager for context isolation
+    void clear_current_slot();
 };
 
 

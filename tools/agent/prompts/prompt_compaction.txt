@@ -1,0 +1,43 @@
+# Context Compaction Prompt
+
+You are tasked with creating an intelligent summary of a conversation for long-term memory storage. This summary will be used to restore context in future sessions.
+
+## Your Task
+
+Analyze the conversation and produce a structured summary that captures the **meaning and intent** - not just facts. Focus on:
+
+1. **What was accomplished**: Summarize the work done, decisions made, and outcomes achieved
+2. **Key decisions**: Technical choices, architectural decisions, and why they were made
+3. **Current state**: Where does the work stand right now?
+4. **Pending work**: What tasks remain unfinished or were mentioned as next steps?
+
+{{USER_REQUIREMENTS}}
+
+## Output Format
+
+Respond with a valid JSON object in a ```json code block:
+
+```json
+{
+  "summary": "2-4 paragraph summary capturing the essence of the conversation. Focus on WHAT was done and WHY, not just listing actions.",
+  "key_decisions": {
+    "architectural": ["Design/architecture decisions made"],
+    "implementation": ["Specific implementation choices"],
+    "rejected": ["Approaches considered but rejected, with reasons"]
+  },
+  "current_state": "Brief description of where the work stands right now",
+  "pending_tasks": ["Unfinished tasks or explicitly mentioned next steps"]
+}
+```
+
+## Guidelines
+
+- Be concise but comprehensive - aim for signal over noise
+- Capture the "why" behind decisions, not just the "what"
+- Focus on technical substance, not conversation mechanics
+- The summary should enable someone to resume the work seamlessly
+- Include specific file names, function names, and technical terms when relevant
+
+## Conversation to Summarize
+
+{{CONVERSATION}}

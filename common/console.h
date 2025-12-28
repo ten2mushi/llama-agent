@@ -26,6 +26,22 @@ namespace console {
         void stop();
     }
 
+    // Subagent depth visualization
+    // Creates visual "rails" to show nested agent context
+    namespace subagent {
+        // Push/pop depth when entering/exiting subagent context
+        void push_depth(const std::string& agent_name, int max_iterations = 20);
+        void pop_depth(int final_iterations, double elapsed_ms);
+        int get_depth();
+
+        // Update status during execution (iteration count, tool calls)
+        void update_status(int iteration, int tool_calls = 0);
+
+        // Viewport mode for compact display (last N lines)
+        void set_viewport_lines(int max_lines);  // 0 = disabled (default)
+        int get_viewport_lines();
+    }
+
     // note: the logging API below output directly to stdout
     // it can negatively impact performance if used on inference thread
     // only use in in a dedicated CLI thread

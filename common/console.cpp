@@ -83,6 +83,28 @@ namespace console {
 
     static bool         bracket_paste_mode = false;  // true when inside ESC[200~ ... ESC[201~
 
+    // Subagent depth tracking for visual rails
+    struct subagent_context {
+        std::string agent_name;
+        int max_iterations = 20;
+        int current_iteration = 0;
+        int tool_calls = 0;
+        std::chrono::steady_clock::time_point start_time;
+    };
+    static std::vector<subagent_context> depth_stack;
+    static int viewport_max_lines = 0;  // 0 = disabled
+    static bool needs_rail_prefix = true;  // true at start of new line
+
+    // Rail colors cycle per depth level
+    static const char* depth_colors[] = {
+        ANSI_COLOR_CYAN,
+        ANSI_COLOR_MAGENTA,
+        ANSI_COLOR_YELLOW,
+        ANSI_COLOR_GREEN,
+        ANSI_COLOR_BLUE,
+    };
+    static const int num_depth_colors = sizeof(depth_colors) / sizeof(depth_colors[0]);
+
     //
     // Init and cleanup
     //
@@ -1193,10 +1215,126 @@ namespace console {
         }
     }
 
+    // Subagent depth visualization - creates visual "rails" showing context depth
+    namespace subagent {
+        // Helper to render the depth rails
+        static void render_rails() {
+            if (depth_stack.empty() || !advanced_display) return;
+
+            for (size_t i = 0; i < depth_stack.size(); ++i) {
+                const char* color = depth_colors[i % num_depth_colors];
+                fprintf(out, "%s▐%s", color, ANSI_COLOR_RESET);
+            }
+            fprintf(out, " ");
+        }
+
+        void push_depth(const std::string& agent_name, int max_iterations) {
+            subagent_context ctx;
+            ctx.agent_name = agent_name;
+            ctx.max_iterations = max_iterations;
+            ctx.current_iteration = 0;
+            ctx.tool_calls = 0;
+            ctx.start_time = std::chrono::steady_clock::now();
+            depth_stack.push_back(ctx);
+
+            if (!advanced_display) return;
+
+            // Render opening frame
+            const char* color = depth_colors[(depth_stack.size() - 1) % num_depth_colors];
+
+            // Newline before frame
+            fprintf(out, "\n");
+
+            // Top border with agent name
+            fprintf(out, "%s╭─ %s ─", color, agent_name.c_str());
+
+            // Fill to reasonable width
+            int name_len = (int)agent_name.length();
+            int padding = 40 - name_len;
+            for (int i = 0; i < padding && i < 50; ++i) {
+                fprintf(out, "─");
+            }
+            fprintf(out, " depth:%zu ─╮%s\n", depth_stack.size(), ANSI_COLOR_RESET);
+
+            needs_rail_prefix = true;
+            fflush(out);
+        }
+
+        void pop_depth(int final_iterations, double elapsed_ms) {
+            if (depth_stack.empty()) return;
+
+            subagent_context& ctx = depth_stack.back();
+
+            if (advanced_display) {
+                const char* color = depth_colors[(depth_stack.size() - 1) % num_depth_colors];
+
+                // Bottom border with stats
+                fprintf(out, "%s╰─", color);
+                for (int i = 0; i < 30; ++i) {
+                    fprintf(out, "─");
+                }
+                fprintf(out, " iter:%d/%d | %.1fs ─╯%s\n",
+                        final_iterations, ctx.max_iterations,
+                        elapsed_ms / 1000.0, ANSI_COLOR_RESET);
+            }
+
+            depth_stack.pop_back();
+            needs_rail_prefix = true;
+            fflush(out);
+        }
+
+        int get_depth() {
+            return (int)depth_stack.size();
+        }
+
+        void update_status(int iteration, int tool_calls) {
+            if (depth_stack.empty()) return;
+            depth_stack.back().current_iteration = iteration;
+            depth_stack.back().tool_calls = tool_calls;
+        }
+
+        void set_viewport_lines(int max_lines) {
+            viewport_max_lines = max_lines;
+        }
+
+        int get_viewport_lines() {
+            return viewport_max_lines;
+        }
+    }
+
+    // Helper to output text with depth rail prefixes
+    static void output_with_rails(const char* text) {
+        if (depth_stack.empty()) {
+            fputs(text, out);
+            return;
+        }
+
+        // Process character by character, adding rail prefix after newlines
+        for (const char* p = text; *p; ++p) {
+            if (needs_rail_prefix) {
+                subagent::render_rails();
+                needs_rail_prefix = false;
+            }
+            fputc(*p, out);
+            if (*p == '\n') {
+                needs_rail_prefix = true;
+            }
+        }
+    }
+
     void log(const char * fmt, ...) {
         va_list args;
         va_start(args, fmt);
-        vfprintf(out, fmt, args);
+
+        if (depth_stack.empty() || !advanced_display) {
+            // Fast path: no subagent context, direct output
+            vfprintf(out, fmt, args);
+        } else {
+            // Subagent context: need to add rail prefixes
+            char buffer[4096];
+            vsnprintf(buffer, sizeof(buffer), fmt, args);
+            output_with_rails(buffer);
+        }
         va_end(args);
     }
 

@@ -1,9 +1,9 @@
 #include "permission.h"
 #include "console.h"
+#include "common/agent-common.h"
 
 #include <algorithm>
 #include <iostream>
-#include <filesystem>
 
 #if defined(_WIN32)
 #include <conio.h>
@@ -11,6 +11,8 @@
 #include <termios.h>
 #include <unistd.h>
 #endif
+
+namespace fs = agent::fs;
 
 // Read a single character without waiting for Enter
 static char read_single_char() {
@@ -28,7 +30,12 @@ static char read_single_char() {
 #endif
 }
 
-namespace fs = std::filesystem;
+// Read a line of text for custom feedback
+static std::string read_feedback_line() {
+    std::string line;
+    std::getline(std::cin, line);
+    return line;
+}
 
 permission_manager::permission_manager() {
     // Set default permissions
@@ -134,7 +141,10 @@ permission_state permission_manager::check_permission(const permission_request &
     return permission_state::ASK;  // Default to asking
 }
 
-permission_response permission_manager::prompt_user(const permission_request & request) {
+permission_prompt_result permission_manager::prompt_user_extended(const permission_request & request) {
+    permission_prompt_result result;
+    result.response = permission_response::DENY_ONCE;  // Default
+
     console::set_display(DISPLAY_TYPE_RESET);
 
     // Display permission request
@@ -157,32 +167,56 @@ permission_response permission_manager::prompt_user(const permission_request & r
     for (int i = 0; i < 59; i++) console::log("-");
     console::log("+\n");
 
-    console::log("| [y]es  [n]o  [a]lways  [d]eny always: ");
+    console::log("| [y]es  [n]o  [a]lways  [d]eny always  [c]ustom: ");
     console::flush();
 
     char ch = read_single_char();
     console::log("%c\n", ch);  // Echo the character
 
     if (ch == 'n' || ch == 'N') {
-        return permission_response::DENY_ONCE;
+        result.response = permission_response::DENY_ONCE;
     }
-    if (ch == 'y' || ch == 'Y') {
-        return permission_response::ALLOW_ONCE;
+    else if (ch == 'y' || ch == 'Y') {
+        result.response = permission_response::ALLOW_ONCE;
     }
-    if (ch == 'a' || ch == 'A') {
+    else if (ch == 'a' || ch == 'A') {
         // Store session override
         std::string key = request.tool_name + ":" + request.details;
         session_overrides_[key] = permission_state::ALLOW_SESSION;
-        return permission_response::ALLOW_ALWAYS;
+        result.response = permission_response::ALLOW_ALWAYS;
     }
-    if (ch == 'd' || ch == 'D') {  // 'd' for deny always (since 'N' is deny once)
+    else if (ch == 'd' || ch == 'D') {  // 'd' for deny always (since 'N' is deny once)
         std::string key = request.tool_name + ":" + request.details;
         session_overrides_[key] = permission_state::DENY_SESSION;
-        return permission_response::DENY_ALWAYS;
+        result.response = permission_response::DENY_ALWAYS;
     }
+    else if (ch == 'c' || ch == 'C') {
+        // Custom feedback mode
+        console::log("| Feedback: ");
+        console::flush();
 
-    // Default to deny for any other key
-    return permission_response::DENY_ONCE;
+        result.custom_feedback = read_feedback_line();
+
+        if (result.custom_feedback.empty()) {
+            // Empty feedback = treat as deny
+            console::log("| (empty feedback, treating as deny)\n");
+            result.response = permission_response::DENY_ONCE;
+        } else {
+            result.response = permission_response::CUSTOM_FEEDBACK;
+        }
+    }
+    // else: default to deny for any other key
+
+    return result;
+}
+
+permission_response permission_manager::prompt_user(const permission_request & request) {
+    auto result = prompt_user_extended(request);
+    // Legacy callers don't get custom feedback - treat as deny
+    if (result.response == permission_response::CUSTOM_FEEDBACK) {
+        return permission_response::DENY_ONCE;
+    }
+    return result.response;
 }
 
 void permission_manager::record_tool_call(const std::string & tool, const std::string & args_hash) {

@@ -1,4 +1,5 @@
 #include "../tool-registry.h"
+#include "../common/constants.h"
 
 #include <array>
 #include <atomic>
@@ -19,9 +20,6 @@
 #include <signal.h>
 #include <fcntl.h>
 #endif
-
-static const int MAX_OUTPUT_LENGTH = 30000;
-static const int MAX_OUTPUT_LINES = 50;
 
 // Truncate output to max lines
 static std::string truncate_lines(const std::string & text, int max_lines) {
@@ -118,8 +116,8 @@ static tool_result bash_execute(const json & args, const tool_context & ctx) {
 
         if (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
             buffer[bytesRead] = '\0';
-            if (output.length() < MAX_OUTPUT_LENGTH) {
-                output.append(buffer, std::min((size_t)bytesRead, MAX_OUTPUT_LENGTH - output.length()));
+            if (output.length() < agent::config::MAX_BASH_OUTPUT_LENGTH) {
+                output.append(buffer, std::min((size_t)bytesRead, agent::config::MAX_BASH_OUTPUT_LENGTH - output.length()));
             }
         }
     }
@@ -189,8 +187,8 @@ static tool_result bash_execute(const json & args, const tool_context & ctx) {
         ssize_t n = read(pipe_fd[0], buffer, sizeof(buffer) - 1);
         if (n > 0) {
             buffer[n] = '\0';
-            if (output.length() < MAX_OUTPUT_LENGTH) {
-                output.append(buffer, std::min((size_t)n, MAX_OUTPUT_LENGTH - output.length()));
+            if (output.length() < agent::config::MAX_BASH_OUTPUT_LENGTH) {
+                output.append(buffer, std::min((size_t)n, agent::config::MAX_BASH_OUTPUT_LENGTH - output.length()));
             }
         } else if (n == 0) {
             // EOF
@@ -203,8 +201,8 @@ static tool_result bash_execute(const json & args, const tool_context & ctx) {
                 // Process ended, read remaining data
                 while ((n = read(pipe_fd[0], buffer, sizeof(buffer) - 1)) > 0) {
                     buffer[n] = '\0';
-                    if (output.length() < MAX_OUTPUT_LENGTH) {
-                        output.append(buffer, std::min((size_t)n, MAX_OUTPUT_LENGTH - output.length()));
+                    if (output.length() < agent::config::MAX_BASH_OUTPUT_LENGTH) {
+                        output.append(buffer, std::min((size_t)n, agent::config::MAX_BASH_OUTPUT_LENGTH - output.length()));
                     }
                 }
                 exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
@@ -226,13 +224,13 @@ static tool_result bash_execute(const json & args, const tool_context & ctx) {
 #endif
 
     // Build result with line truncation
-    std::string truncated_output = truncate_lines(output, MAX_OUTPUT_LINES);
+    std::string truncated_output = truncate_lines(output, agent::config::MAX_BASH_OUTPUT_LINES);
 
     std::ostringstream result_output;
     result_output << truncated_output;
 
-    if (output.length() >= MAX_OUTPUT_LENGTH) {
-        result_output << "\n[Output truncated at " << MAX_OUTPUT_LENGTH << " characters]";
+    if (output.length() >= agent::config::MAX_BASH_OUTPUT_LENGTH) {
+        result_output << "\n[Output truncated at " << agent::config::MAX_BASH_OUTPUT_LENGTH << " characters]";
     }
 
     if (timed_out) {
@@ -249,6 +247,7 @@ static tool_result bash_execute(const json & args, const tool_context & ctx) {
 static tool_def bash_tool = {
     "bash",
     "Execute a bash/shell command. Use for running programs, git operations, build commands, etc. The command runs in the project working directory.",
+    "bash(command: string, timeout?: int)",
     R"json({
         "type": "object",
         "properties": {

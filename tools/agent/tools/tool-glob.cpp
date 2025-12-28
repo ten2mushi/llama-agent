@@ -1,12 +1,13 @@
 #include "../tool-registry.h"
+#include "../common/agent-common.h"
+#include "../common/constants.h"
 
-#include <filesystem>
 #include <regex>
 #include <vector>
 #include <algorithm>
 #include <sstream>
 
-namespace fs = std::filesystem;
+namespace fs = agent::fs;
 
 // Convert glob pattern to regex
 static std::string glob_to_regex(const std::string & pattern) {
@@ -100,7 +101,7 @@ static tool_result glob_execute(const json & args, const tool_context & ctx) {
 
     // Collect matching files with modification times
     std::vector<std::pair<fs::path, fs::file_time_type>> matches;
-    const int limit = 100;
+    const int limit = agent::config::MAX_GLOB_RESULTS;
 
     try {
         for (const auto & entry : fs::recursive_directory_iterator(
@@ -155,6 +156,7 @@ static tool_result glob_execute(const json & args, const tool_context & ctx) {
 static tool_def glob_tool = {
     "glob",
     "Find files matching a glob pattern. Supports * (any characters except /), ** (any path), ? (single character), [abc] (character class). Results are sorted by modification time (most recent first).",
+    "glob(pattern: string, path?: string)",
     R"json({
         "type": "object",
         "properties": {

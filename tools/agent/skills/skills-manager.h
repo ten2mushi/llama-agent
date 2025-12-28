@@ -1,12 +1,12 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include "../common/agent-common.h"
 
 #include <optional>
 #include <string>
 #include <vector>
 
-using json = nlohmann::ordered_json;
+using agent::json;
 
 // Metadata parsed from SKILL.md frontmatter
 struct skill_metadata {
@@ -58,6 +58,4 @@ private:
     std::optional<skill_metadata> parse_frontmatter(const std::string & content,
                                                      const std::string & path);
 
-    // Escape XML special characters
-    static std::string escape_xml(const std::string & str);
 };

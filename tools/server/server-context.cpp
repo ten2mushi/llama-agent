@@ -2826,6 +2826,27 @@ server_context_info server_context::get_info() const {
     };
 }
 
+void server_context::clear_current_slot() {
+    // Use the task queue to safely clear slot 0
+    // This avoids race conditions with the inference thread
+    int task_id = impl->queue_tasks.get_new_id();
+    {
+        server_task task(SERVER_TASK_TYPE_SLOT_ERASE);
+        task.id = task_id;
+        task.slot_action.slot_id = 0;  // CLI always uses slot 0
+
+        impl->queue_results.add_waiting_task_id(task_id);
+        impl->queue_tasks.post(std::move(task));
+    }
+
+    // Wait for the erase to complete
+    server_task_result_ptr result = impl->queue_results.recv(task_id);
+    impl->queue_results.remove_waiting_task_id(task_id);
+
+    if (result->is_error()) {
+        SRV_ERR("failed to clear slot: %s\n", result->to_json().dump().c_str());
+    }
+}
 
 
 // generator-like API for HTTP response generation

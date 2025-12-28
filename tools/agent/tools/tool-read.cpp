@@ -1,20 +1,18 @@
 #include "../tool-registry.h"
 #include "../permission.h"
+#include "../common/agent-common.h"
+#include "../common/constants.h"
 
 #include <fstream>
 #include <sstream>
 #include <iomanip>
-#include <filesystem>
 
-namespace fs = std::filesystem;
-
-static const int DEFAULT_LIMIT = 2000;
-static const int MAX_LINE_LENGTH = 2000;
+namespace fs = agent::fs;
 
 static tool_result read_execute(const json & args, const tool_context & ctx) {
     std::string file_path = args.value("file_path", "");
     int offset = args.value("offset", 0);
-    int limit = args.value("limit", DEFAULT_LIMIT);
+    int limit = args.value("limit", agent::config::DEFAULT_READ_LIMIT);
 
     if (file_path.empty()) {
         return {false, "", "file_path parameter is required"};
@@ -57,8 +55,8 @@ static tool_result read_execute(const json & args, const tool_context & ctx) {
         total_lines++;
         if (line_num >= offset && (int)lines.size() < limit) {
             // Truncate very long lines
-            if (line.length() > MAX_LINE_LENGTH) {
-                line = line.substr(0, MAX_LINE_LENGTH) + "...";
+            if (line.length() > agent::config::MAX_LINE_LENGTH) {
+                line = line.substr(0, agent::config::MAX_LINE_LENGTH) + "...";
             }
             lines.push_back(line);
         }
@@ -93,6 +91,7 @@ static tool_result read_execute(const json & args, const tool_context & ctx) {
 static tool_def read_tool = {
     "read",
     "Read the contents of a file. Returns numbered lines for easy reference. Use offset and limit for large files.",
+    "read(file_path: string, offset?: int, limit?: int)",
     R"json({
         "type": "object",
         "properties": {

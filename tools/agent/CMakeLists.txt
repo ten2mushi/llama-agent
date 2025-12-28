@@ -6,12 +6,28 @@ set(AGENT_SOURCES
     tool-registry.cpp
     permission.cpp
     skills/skills-manager.cpp
-    agents-md/agents-md-manager.cpp
+    context/context-manager.cpp
+    subagents/agent-registry.cpp
+    subagents/subagent-manager.cpp
+    subagents/embedded-agents.cpp
     tools/tool-bash.cpp
     tools/tool-read.cpp
     tools/tool-write.cpp
     tools/tool-edit.cpp
     tools/tool-glob.cpp
+    tools/tool-spawn-agent.cpp
+    tools/tool-read-plan.cpp
+    tools/tool-describe.cpp
+    commands/command-handler.cpp
+    commands/cmd-exit.cpp
+    commands/cmd-context.cpp
+    commands/cmd-info.cpp
+    commands/cmd-compact.cpp
+    commands/cmd-plan.cpp
+    planning/plan-state.cpp
+    planning/plan-questions.cpp
+    planning/plan-format.cpp
+    ui/interactive-qa.cpp
 )
 
 # MCP support only available on Unix (uses fork, pipe, poll)

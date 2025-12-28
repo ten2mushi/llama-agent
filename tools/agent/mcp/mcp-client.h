@@ -1,6 +1,6 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include "../common/agent-common.h"
 
 #include <string>
 #include <vector>
@@ -14,7 +14,7 @@ typedef DWORD pid_t;
 #include <sys/types.h>
 #endif
 
-using json = nlohmann::ordered_json;
+using agent::json;
 
 // MCP tool definition from server
 struct mcp_tool {

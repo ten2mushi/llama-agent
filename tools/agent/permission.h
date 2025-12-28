@@ -35,6 +35,13 @@ enum class permission_response {
     DENY_ONCE,
     ALLOW_ALWAYS,
     DENY_ALWAYS,
+    CUSTOM_FEEDBACK,  // User provided custom feedback to realign the agent
+};
+
+// Extended response that can carry custom feedback text
+struct permission_prompt_result {
+    permission_response response;
+    std::string custom_feedback;  // Only valid when response == CUSTOM_FEEDBACK
 };
 
 class permission_manager {
@@ -52,6 +59,9 @@ public:
 
     // Interactive prompt for permission (returns user's choice)
     permission_response prompt_user(const permission_request & request);
+
+    // Interactive prompt with extended result (supports custom feedback)
+    permission_prompt_result prompt_user_extended(const permission_request & request);
 
     // Record a tool call for doom-loop detection
     void record_tool_call(const std::string & tool, const std::string & args_hash);

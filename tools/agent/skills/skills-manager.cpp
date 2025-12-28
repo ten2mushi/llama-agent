@@ -2,19 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
-#include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 
-namespace fs = std::filesystem;
-
-// Trim whitespace from both ends of a string
-static std::string trim(const std::string & str) {
-    size_t start = str.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    size_t end = str.find_last_not_of(" \t\r\n");
-    return str.substr(start, end - start + 1);
-}
+namespace fs = agent::fs;
+using agent::escape_xml;
+using agent::trim;
 
 // Parse a simple YAML key-value line like "key: value"
 static std::pair<std::string, std::string> parse_yaml_line(const std::string & line) {
@@ -70,21 +64,6 @@ bool skills_manager::validate_name(const std::string & name) {
     return true;
 }
 
-std::string skills_manager::escape_xml(const std::string & str) {
-    std::string result;
-    result.reserve(str.size());
-    for (char c : str) {
-        switch (c) {
-            case '&':  result += "&amp;";  break;
-            case '<':  result += "&lt;";   break;
-            case '>':  result += "&gt;";   break;
-            case '"':  result += "&quot;"; break;
-            case '\'': result += "&apos;"; break;
-            default:   result += c;        break;
-        }
-    }
-    return result;
-}
 
 std::optional<skill_metadata> skills_manager::parse_frontmatter(const std::string & content,
                                                                   const std::string & path) {
@@ -229,8 +208,9 @@ std::optional<skill_metadata> skills_manager::parse_skill(const std::string & sk
 }
 
 int skills_manager::discover(const std::vector<std::string> & search_paths) {
-    skills_.clear();
-    int count = 0;
+    // Use map to implement precedence: later paths (local) override earlier paths (global)
+    // Expected order: global paths first, then local paths
+    std::map<std::string, skill_metadata> skills_by_name;
 
     for (const auto & search_path : search_paths) {
         if (!fs::exists(search_path) || !fs::is_directory(search_path)) {
@@ -251,19 +231,8 @@ int skills_manager::discover(const std::vector<std::string> & search_paths) {
 
                 auto skill = parse_skill(entry.path().string());
                 if (skill) {
-                    // Check for duplicates (first discovered wins)
-                    bool duplicate = false;
-                    for (const auto & existing : skills_) {
-                        if (existing.name == skill->name) {
-                            duplicate = true;
-                            break;
-                        }
-                    }
-
-                    if (!duplicate) {
-                        skills_.push_back(*skill);
-                        count++;
-                    }
+                    // Later entries overwrite earlier ones (local supersedes global)
+                    skills_by_name[skill->name] = *skill;
                 }
             }
         } catch (const fs::filesystem_error &) {
@@ -272,13 +241,19 @@ int skills_manager::discover(const std::vector<std::string> & search_paths) {
         }
     }
 
+    // Convert map to vector
+    skills_.clear();
+    for (const auto & [name, skill] : skills_by_name) {
+        skills_.push_back(skill);
+    }
+
     // Sort skills by name for consistent ordering
     std::sort(skills_.begin(), skills_.end(),
               [](const skill_metadata & a, const skill_metadata & b) {
                   return a.name < b.name;
               });
 
-    return count;
+    return static_cast<int>(skills_.size());
 }
 
 std::string skills_manager::generate_prompt_section() const {

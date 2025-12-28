@@ -1,11 +1,11 @@
 #include "mcp-server-manager.h"
+#include "../common/constants.h"
 
 #include <fstream>
-#include <filesystem>
 #include <cstdlib>
 #include <regex>
 
-namespace fs = std::filesystem;
+namespace fs = agent::fs;
 
 mcp_server_manager::~mcp_server_manager() {
     shutdown_all();
@@ -65,8 +65,8 @@ bool mcp_server_manager::load_config(const std::string & config_path) {
         // Optional: enabled (default true)
         cfg.enabled = server_json.value("enabled", true);
 
-        // Optional: timeout (default 60000ms)
-        cfg.timeout_ms = server_json.value("timeout", 60000);
+        // Optional: timeout (default from constants)
+        cfg.timeout_ms = server_json.value("timeout", agent::config::MCP_TIMEOUT_MS);
 
         configs_[name] = cfg;
     }
@@ -147,7 +147,7 @@ mcp_call_result mcp_server_manager::call_tool(const std::string & qualified_name
     }
 
     // Get timeout from config
-    int timeout = 60000;
+    int timeout = agent::config::MCP_TIMEOUT_MS;
     auto cfg_it = configs_.find(server);
     if (cfg_it != configs_.end()) {
         timeout = cfg_it->second.timeout_ms;

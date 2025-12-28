@@ -1,13 +1,13 @@
 #include "../tool-registry.h"
 #include "../permission.h"
+#include "../common/agent-common.h"
 
 #include <fstream>
 #include <sstream>
-#include <filesystem>
 #include <algorithm>
 #include <vector>
 
-namespace fs = std::filesystem;
+namespace fs = agent::fs;
 
 // ANSI color codes
 static const char * ANSI_RED    = "\033[31m";
@@ -155,6 +155,7 @@ static tool_result edit_execute(const json & args, const tool_context & ctx) {
 static tool_def edit_tool = {
     "edit",
     "Make targeted edits to a file by finding and replacing specific text. The old_string must match exactly (including whitespace and indentation). For multiple matches, either provide more context or use replace_all.",
+    "edit(file_path: string, old_string: string, new_string: string, replace_all?: bool)",
     R"json({
         "type": "object",
         "properties": {

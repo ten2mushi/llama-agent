@@ -1,9 +1,36 @@
 #include "agent-loop.h"
 #include "console.h"
+#include "llama.h"
 
 #include <chrono>
+#include <fstream>
 #include <functional>
 #include <sstream>
+
+// Path to the system prompt file (relative to executable or install location)
+static const char* SYSTEM_PROMPT_FILENAME = "prompts/system-prompt.txt";
+
+// Load system prompt from file, with fallback paths
+static std::string load_system_prompt_file() {
+    // Try paths in order of preference:
+    // 1. Next to the executable
+    // 2. Relative to working directory
+    std::vector<std::string> search_paths = {
+        std::string(SYSTEM_PROMPT_FILENAME),
+    };
+
+    for (const auto& path : search_paths) {
+        std::ifstream file(path);
+        if (file.is_open()) {
+            std::stringstream buffer;
+            buffer << file.rdbuf();
+            return buffer.str();
+        }
+    }
+
+    // Return empty if not found - caller will use embedded fallback
+    return "";
+}
 
 #if defined(_WIN32)
 #include <conio.h>
@@ -64,128 +91,51 @@ agent_loop::agent_loop(server_context & server_ctx,
     tool_ctx_.working_dir = config.working_dir.empty() ? "." : config.working_dir;
     tool_ctx_.is_interrupted = &is_interrupted_;
     tool_ctx_.timeout_ms = config.tool_timeout_ms;
+    tool_ctx_.subagent_mgr = config.subagent_mgr;
+    tool_ctx_.context_base_path = config.context_base_path;
+    tool_ctx_.context_id = config.context_id;
 
-    // Set up permission manager
-    permission_mgr_.set_project_root(tool_ctx_.working_dir);
-    permission_mgr_.set_yolo_mode(config.yolo_mode);
+    // Set up permission manager - use parent's if provided, otherwise use our own
+    if (config.parent_permission_mgr) {
+        permission_mgr_ = config.parent_permission_mgr;
+    } else {
+        owned_permission_mgr_.set_project_root(tool_ctx_.working_dir);
+        owned_permission_mgr_.set_yolo_mode(config.yolo_mode);
+        permission_mgr_ = &owned_permission_mgr_;
+    }
 
-    // Add system prompt for tool usage
-    std::string system_prompt = R"(You are llama-agent, a powerful local AI coding assistant running on llama.cpp.
+    // Get context size for usage tracking
+    llama_context* lctx = server_ctx_.get_llama_context();
+    if (lctx) {
+        stats_.n_ctx = llama_n_ctx(lctx);
+    }
 
-You help users with software engineering tasks by reading files, writing code, running commands, and navigating codebases. You run entirely on the user's machine - no data leaves their system.
+    // Determine system prompt: use custom if provided, else load from file/fallback
+    std::string system_prompt;
+    if (!config.custom_system_prompt.empty()) {
+        // Use custom system prompt for specialized agents (e.g., planning-agent)
+        system_prompt = config.custom_system_prompt;
+    } else {
+        // Load system prompt from external file (with embedded fallback for robustness)
+        system_prompt = load_system_prompt_file();
+        if (system_prompt.empty()) {
+            // Fallback: minimal embedded prompt if file not found
+            system_prompt = R"(You are llama-agent, a powerful local AI coding assistant running on llama.cpp.
 
-# Tools
-
-You have access to the following tools:
-
-- **bash**: Execute shell commands. Use for git, build commands, running tests, etc.
-- **read**: Read file contents with line numbers. Always read files before editing them.
-- **write**: Create new files or overwrite existing ones.
-- **edit**: Make targeted edits using search/replace. The old_string must match exactly. Use replace_all=true to replace all occurrences of a word or phrase.
-- **glob**: Find files matching a pattern. Use to explore project structure.
-
-## Using the edit tool
-The edit tool finds and replaces text in files. Key points:
-- **old_string must match exactly** - include correct whitespace and indentation
-- **Always read the file first** - so you know the exact text to match
-- **Use replace_all=true** when replacing a word or short phrase everywhere in the file
-- **Use more context** when there are multiple matches and you only want to change one
+You help users with software engineering tasks by reading files, writing code, running commands, and navigating codebases.
 
 # Guidelines
+- Be direct and concise. No filler.
+- ALWAYS read files before editing them.
+- Think step by step, analyzing each tool result.
+- Prefer targeted edits over full rewrites.
+- When done, provide a brief summary.)";
+        }
+    }
 
-## Be direct and concise
-- Give short, clear responses. No filler or excessive explanation.
-- Use markdown for code blocks and formatting.
-- No emojis unless the user asks for them.
-
-## Think step by step
-- Break complex tasks into smaller steps.
-- After each tool result, analyze what you learned and decide the next action.
-- When stuck, explain your reasoning and ask for clarification.
-
-## Read before you write
-- ALWAYS read a file before editing it.
-- Understand existing code patterns before making changes.
-- Check if similar code exists before creating new files.
-
-## Be careful with destructive operations
-- Double-check paths before deleting or overwriting files.
-- Prefer targeted edits over full file rewrites.
-- Run tests after making changes when possible.
-
-# Tool Usage
-
-## Parallel execution
-When multiple operations are independent, execute them together. For example, reading multiple files or running independent commands.
-
-## Search strategy
-When looking for code:
-1. Use `glob` to find candidate files
-2. Use `read` to examine promising files
-3. Use `bash` with grep for text search across files
-
-## Code references
-When referring to code, use the format `file_path:line_number` so users can navigate easily.
-
-Example: "The bug is in the `processRequest` function in src/server.cpp:142"
-
-# Examples
-
-<example>
-User: Fix the typo in README.md
-Assistant: Let me read the file first.
-[Tool: read README.md]
-I see the typo on line 15. Let me fix it.
-[Tool: edit README.md - fixes "teh" -> "the"]
-Done. Fixed "teh" to "the" on line 15.
-</example>
-
-<example>
-User: Find where the API routes are defined
-Assistant: Let me search for route definitions.
-[Tool: glob **/*route*.{js,ts}]
-Found src/routes/api.ts and src/routes/auth.ts.
-[Tool: read src/routes/api.ts]
-The API routes are defined in src/routes/api.ts. The main endpoints are:
-- GET /users (line 12)
-- POST /users (line 24)
-- GET /users/:id (line 36)
-</example>
-
-<example>
-User: Run the tests and fix any failures
-Assistant: Running the test suite.
-[Tool: bash npm test]
-3 tests failed. Let me examine each failure:
-1. test/auth.test.js - "should validate token"
-[Tool: read test/auth.test.js]
-[Tool: read src/auth.js]
-The issue is on src/auth.js:45 - the token expiry check is inverted.
-[Tool: edit src/auth.js - fixes the condition]
-Let me run the tests again.
-[Tool: bash npm test]
-All tests passing now.
-</example>
-
-When the task is complete, provide a brief summary of what you did.)";
-
-    // Append AGENTS.md section if available (agents.md spec)
-    if (!config.agents_md_prompt_section.empty()) {
-        system_prompt += R"(
-
-# Project Context
-
-This project has AGENTS.md files with specific guidance for this codebase.
-Follow these project-specific instructions, especially for:
-- Build and test commands
-- Code style preferences
-- File organization conventions
-- PR and commit guidelines
-
-When project instructions conflict with general guidelines, prefer project-specific guidance.
-
-)";
-        system_prompt += config.agents_md_prompt_section;
+    // Append dynamically generated tool table (unless skipped)
+    if (!config.skip_tool_table) {
+        system_prompt += "\n\n" + generate_tool_table();
     }
 
     // Append skills section if available (agentskills.io spec)
@@ -225,7 +175,107 @@ void agent_loop::clear() {
         messages_ = json::array();
         messages_.push_back(system_msg);
     }
-    permission_mgr_.clear_session();
+    permission_mgr_->clear_session();
+    // Note: context_id should be updated by caller if creating new context
+}
+
+void agent_loop::set_messages(const json & messages) {
+    // Preserve our system prompt (first message) when loading external messages
+    // The loaded messages may have their own system message (e.g., compact summary)
+    // which we need to merge with our tool-aware system prompt
+
+    if (messages_.empty()) {
+        // No existing system prompt, just set messages
+        messages_ = messages;
+        return;
+    }
+
+    // Save our system prompt
+    json our_system_prompt = messages_[0];
+
+    // Start fresh with our system prompt
+    messages_ = json::array();
+    messages_.push_back(our_system_prompt);
+
+    // Append loaded messages, skipping any system message at the start
+    for (size_t i = 0; i < messages.size(); ++i) {
+        const auto& msg = messages[i];
+        if (i == 0 && msg.value("role", "") == "system") {
+            // Merge the loaded system content into our system prompt
+            std::string loaded_content = msg.value("content", "");
+            if (!loaded_content.empty()) {
+                // Append as context to our system prompt
+                std::string our_content = our_system_prompt.value("content", "");
+                our_content += "\n\n# Restored Context\n\n" + loaded_content;
+                messages_[0]["content"] = our_content;
+            }
+        } else {
+            messages_.push_back(msg);
+        }
+    }
+}
+
+void agent_loop::add_message(const json & message) {
+    messages_.push_back(message);
+    // Trigger persistence callback if set
+    if (config_.on_message) {
+        config_.on_message(message);
+    }
+}
+
+bool agent_loop::is_tool_allowed(const std::string & tool_name) const {
+    // Empty allowed_tools means all tools are allowed
+    if (config_.allowed_tools.empty()) {
+        return true;
+    }
+    // Check if tool is in the whitelist
+    for (const auto& allowed : config_.allowed_tools) {
+        if (allowed == tool_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<const tool_def*> agent_loop::get_allowed_tools() const {
+    auto all_tools = tool_registry::instance().get_all_tools();
+
+    // If no filter, return all tools
+    if (config_.allowed_tools.empty()) {
+        return all_tools;
+    }
+
+    // Filter to only allowed tools
+    std::vector<const tool_def*> filtered;
+    for (const auto* tool : all_tools) {
+        if (is_tool_allowed(tool->name)) {
+            filtered.push_back(tool);
+        }
+    }
+    return filtered;
+}
+
+std::string agent_loop::generate_tool_table() const {
+    std::ostringstream ss;
+    ss << "# Available Tools\n\n";
+    ss << "| Tool | Signature | Description |\n";
+    ss << "|------|-----------|-------------|\n";
+
+    for (const auto* tool : get_allowed_tools()) {
+        // Get first sentence of description for compact display
+        std::string short_desc = tool->description;
+        size_t period_pos = short_desc.find('.');
+        if (period_pos != std::string::npos && period_pos < 100) {
+            short_desc = short_desc.substr(0, period_pos + 1);
+        } else if (short_desc.length() > 80) {
+            short_desc = short_desc.substr(0, 77) + "...";
+        }
+
+        ss << "| " << tool->name << " | `" << tool->signature << "` | " << short_desc << " |\n";
+    }
+
+    ss << "\nUse `describe_tool(tool_name)` for full parameter documentation.\n";
+    return ss.str();
 }
 
 // Parse a single function block: <function=name>...<parameter=key>value</parameter>...</function>
@@ -402,8 +452,11 @@ common_chat_msg agent_loop::generate_completion(result_timings & out_timings) {
         task.index     = 0;
         task.params    = task_defaults_;
 
-        // Build tools JSON in OAI-compatible format
-        auto chat_tools = tool_registry::instance().to_chat_tools();
+        // Build tools JSON in OAI-compatible format (respecting allowed_tools filter)
+        std::vector<common_chat_tool> chat_tools;
+        for (const auto* tool : get_allowed_tools()) {
+            chat_tools.push_back(tool->to_chat_tool());
+        }
         json tools_json = common_chat_tools_to_json_oaicompat<json>(chat_tools);
 
         // Pass both messages and tools as extended cli_input format
@@ -433,6 +486,7 @@ common_chat_msg agent_loop::generate_completion(result_timings & out_timings) {
 
     console::spinner::stop();
     std::string full_content;
+    std::string full_reasoning;
     bool is_thinking = false;
     bool was_aborted = false;
 
@@ -470,6 +524,7 @@ common_chat_msg agent_loop::generate_completion(result_timings & out_timings) {
                         console::log("───\n");
                     }
                     is_thinking = true;
+                    full_reasoning += diff.reasoning_content_delta;
                     console::log("%s", diff.reasoning_content_delta.c_str());
                     console::flush();
                 }
@@ -498,11 +553,14 @@ common_chat_msg agent_loop::generate_completion(result_timings & out_timings) {
         common_chat_msg msg;
         msg.role = "assistant";
         msg.content = full_content;
+        msg.reasoning_content = full_reasoning;
         return msg;
     }
 
     // Parse tool calls ourselves using the qwen3-coder/nemotron XML format
-    return parse_tool_calls_xml(full_content);
+    common_chat_msg parsed_msg = parse_tool_calls_xml(full_content);
+    parsed_msg.reasoning_content = full_reasoning;
+    return parsed_msg;
 }
 
 tool_result agent_loop::execute_tool_call(const common_chat_tool_call & call) {
@@ -512,6 +570,11 @@ tool_result agent_loop::execute_tool_call(const common_chat_tool_call & call) {
     const tool_def * tool = registry.get_tool(call.name);
     if (!tool) {
         return {false, "", "Unknown tool: " + call.name};
+    }
+
+    // Check if tool is allowed (for subagents with restricted tool access)
+    if (!is_tool_allowed(call.name)) {
+        return {false, "", "Tool not allowed: " + call.name};
     }
 
     // Parse arguments
@@ -544,7 +607,7 @@ tool_result agent_loop::execute_tool_call(const common_chat_tool_call & call) {
             if (path.is_relative()) {
                 path = std::filesystem::path(tool_ctx_.working_dir) / path;
             }
-            if (permission_mgr_.is_external_path(path.string())) {
+            if (permission_mgr_->is_external_path(path.string())) {
                 permission_request ext_req;
                 ext_req.type = permission_type::EXTERNAL_DIR;
                 ext_req.tool_name = call.name;
@@ -552,9 +615,17 @@ tool_result agent_loop::execute_tool_call(const common_chat_tool_call & call) {
                 ext_req.is_dangerous = true;
                 ext_req.description = "Operation outside working directory";
 
-                auto response = permission_mgr_.prompt_user(ext_req);
-                if (response == permission_response::DENY_ONCE ||
-                    response == permission_response::DENY_ALWAYS) {
+                auto result = permission_mgr_->prompt_user_extended(ext_req);
+                if (result.response == permission_response::CUSTOM_FEEDBACK) {
+                    // Skip execution, inject feedback as result
+                    console::set_display(DISPLAY_TYPE_INFO);
+                    console::log("\n› %s (custom feedback)\n", call.name.c_str());
+                    console::set_display(DISPLAY_TYPE_RESET);
+                    console::log("%s\n", result.custom_feedback.c_str());
+                    return {true, result.custom_feedback, ""};
+                }
+                if (result.response == permission_response::DENY_ONCE ||
+                    result.response == permission_response::DENY_ALWAYS) {
                     return {false, "", "Blocked: File is outside working directory"};
                 }
             }
@@ -577,31 +648,47 @@ tool_result agent_loop::execute_tool_call(const common_chat_tool_call & call) {
     // Check doom loop
     std::hash<std::string> hasher;
     std::string args_hash = std::to_string(hasher(call.arguments));
-    if (permission_mgr_.is_doom_loop(call.name, args_hash)) {
+    if (permission_mgr_->is_doom_loop(call.name, args_hash)) {
         req.description = "Detected repeated identical tool calls (doom loop)";
-        auto response = permission_mgr_.prompt_user(req);
-        if (response == permission_response::DENY_ONCE ||
-            response == permission_response::DENY_ALWAYS) {
+        auto result = permission_mgr_->prompt_user_extended(req);
+        if (result.response == permission_response::CUSTOM_FEEDBACK) {
+            // Skip execution, inject feedback as result
+            console::set_display(DISPLAY_TYPE_INFO);
+            console::log("\n› %s (custom feedback)\n", call.name.c_str());
+            console::set_display(DISPLAY_TYPE_RESET);
+            console::log("%s\n", result.custom_feedback.c_str());
+            return {true, result.custom_feedback, ""};
+        }
+        if (result.response == permission_response::DENY_ONCE ||
+            result.response == permission_response::DENY_ALWAYS) {
             return {false, "", "Blocked: Detected repeated identical tool calls"};
         }
     }
 
     // Check permission
-    permission_state state = permission_mgr_.check_permission(req);
+    permission_state state = permission_mgr_->check_permission(req);
     if (state == permission_state::DENY || state == permission_state::DENY_SESSION) {
         return {false, "", "Permission denied for " + call.name};
     }
 
     if (state == permission_state::ASK) {
-        auto response = permission_mgr_.prompt_user(req);
-        if (response == permission_response::DENY_ONCE ||
-            response == permission_response::DENY_ALWAYS) {
+        auto result = permission_mgr_->prompt_user_extended(req);
+        if (result.response == permission_response::CUSTOM_FEEDBACK) {
+            // Skip execution, inject feedback as result
+            console::set_display(DISPLAY_TYPE_INFO);
+            console::log("\n› %s (custom feedback)\n", call.name.c_str());
+            console::set_display(DISPLAY_TYPE_RESET);
+            console::log("%s\n", result.custom_feedback.c_str());
+            return {true, result.custom_feedback, ""};
+        }
+        if (result.response == permission_response::DENY_ONCE ||
+            result.response == permission_response::DENY_ALWAYS) {
             return {false, "", "User denied permission for " + call.name};
         }
     }
 
     // Record this call
-    permission_mgr_.record_tool_call(call.name, args_hash);
+    permission_mgr_->record_tool_call(call.name, args_hash);
 
     // Display tool execution
     console::set_display(DISPLAY_TYPE_INFO);
@@ -677,7 +764,7 @@ void agent_loop::add_tool_result_message(const std::string & tool_name,
         }
     }
 
-    messages_.push_back(msg);
+    add_message(msg);
 }
 
 agent_loop_result agent_loop::run(const std::string & user_prompt) {
@@ -685,7 +772,7 @@ agent_loop_result agent_loop::run(const std::string & user_prompt) {
     result.iterations = 0;
 
     // Add user message
-    messages_.push_back({
+    add_message({
         {"role", "user"},
         {"content", user_prompt}
     });
@@ -719,6 +806,26 @@ agent_loop_result agent_loop::run(const std::string & user_prompt) {
             stats_.total_cached += timings.cache_n;
         }
 
+        // Track current context usage and warn if approaching limits
+        if (timings.prompt_n > 0 && stats_.n_ctx > 0) {
+            stats_.current_context_tokens = timings.prompt_n + timings.predicted_n;
+            int usage_pct = (stats_.current_context_tokens * 100) / stats_.n_ctx;
+
+            if (usage_pct >= 80 && !stats_.warned_80) {
+                stats_.warned_80 = true;
+                console::set_display(DISPLAY_TYPE_ERROR);
+                console::log("\n[!] Context usage at %d%% (%d/%d tokens). Consider using /compact.\n",
+                            usage_pct, stats_.current_context_tokens, stats_.n_ctx);
+                console::set_display(DISPLAY_TYPE_RESET);
+            } else if (usage_pct >= 70 && !stats_.warned_70) {
+                stats_.warned_70 = true;
+                console::set_display(DISPLAY_TYPE_INFO);
+                console::log("\n[i] Context usage at %d%% (%d/%d tokens).\n",
+                            usage_pct, stats_.current_context_tokens, stats_.n_ctx);
+                console::set_display(DISPLAY_TYPE_RESET);
+            }
+        }
+
         if (parsed.content.empty() && parsed.tool_calls.empty() && is_interrupted_.load()) {
             result.stop_reason = agent_stop_reason::USER_CANCELLED;
             return result;
@@ -728,6 +835,9 @@ agent_loop_result agent_loop::run(const std::string & user_prompt) {
         json assistant_msg;
         assistant_msg["role"] = "assistant";
         assistant_msg["content"] = parsed.content;
+        if (!parsed.reasoning_content.empty()) {
+            assistant_msg["reasoning_content"] = parsed.reasoning_content;
+        }
 
         if (!parsed.tool_calls.empty()) {
             assistant_msg["tool_calls"] = json::array();
@@ -743,7 +853,7 @@ agent_loop_result agent_loop::run(const std::string & user_prompt) {
             }
         }
 
-        messages_.push_back(assistant_msg);
+        add_message(assistant_msg);
 
         // If no tool calls, we're done
         if (parsed.tool_calls.empty()) {

@@ -1,27 +1,12 @@
 #include "agents-md-manager.h"
+#include "../common/constants.h"
 
 #include <algorithm>
-#include <filesystem>
 #include <fstream>
 #include <sstream>
 
-namespace fs = std::filesystem;
-
-std::string agents_md_manager::escape_xml_attr(const std::string & str) {
-    std::string result;
-    result.reserve(str.size());
-    for (char c : str) {
-        switch (c) {
-            case '&':  result += "&amp;";  break;
-            case '<':  result += "&lt;";   break;
-            case '>':  result += "&gt;";   break;
-            case '"':  result += "&quot;"; break;
-            case '\'': result += "&apos;"; break;
-            default:   result += c;        break;
-        }
-    }
-    return result;
-}
+namespace fs = agent::fs;
+using agent::escape_xml;
 
 std::string agents_md_manager::find_git_root(const std::string & start_dir) {
     try {
@@ -84,10 +69,9 @@ int agents_md_manager::discover(const std::string & working_dir, const std::stri
         fs::path stop_at = git_root.empty() ? current : fs::path(git_root);
 
         int depth = 0;
-        const int max_depth = 100;  // Sanity limit
 
         // Walk from working dir up to git root (or just working dir if not in git)
-        while (depth < max_depth) {
+        while (depth < agent::config::MAX_DIRECTORY_DEPTH) {
             // Check for AGENTS.md in current directory
             fs::path agents_path = current / "AGENTS.md";
 
@@ -165,7 +149,7 @@ std::string agents_md_manager::generate_prompt_section() const {
     xml << "Project guidance from AGENTS.md files (closest to working directory takes precedence):\n\n";
 
     for (const auto & file : files_) {
-        xml << "<agents_md path=\"" << escape_xml_attr(file.relative_path) << "\"";
+        xml << "<agents_md path=\"" << escape_xml(file.relative_path) << "\"";
         if (file.depth == 0) {
             xml << " precedence=\"highest\"";
         }
